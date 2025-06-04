@@ -1,8 +1,10 @@
 import random
 import tkinter as tk
 from typing import List
+from PIL import Image, ImageTk
 
-# ---- Kart Sınıfı (Türkçeleştirilmiş) ----
+
+# ---- Kart Sınıfı ----
 class Card:
     def __init__(self, suit, value):
         self.suit = suit  # Kupa, Maça, Sinek, Karo
@@ -12,8 +14,12 @@ class Card:
         return f"{self.suit} {self.value}"
 
     def get_value(self):
-        if self.value in ['J', 'Q', 'K']:
-            return 10
+        if self.value == 'J':
+            return 11
+        elif self.value == 'Q':
+            return 12
+        elif self.value == 'K':
+            return 13
         elif self.value == 'A':
             return 1
         else:
@@ -56,20 +62,80 @@ def get_winning_probability(hand: List[Card], remaining_cards: int, difficulty: 
     return max(0.0, min(1.0, (remaining_cards / 13) / cards_needed))
 
 # ---- AI Kart Seçimi ----
-def choose_card_to_discard(hand: List[Card], new_card: Card, deck: List[Card], difficulty: str) -> (Card, float):
+def choose_card_to_discard(
+        hand: List[Card],
+        new_card: Card,
+        deck: List[Card],
+        discard_pile: List[Card],
+        difficulty: str,
+        opponent_hand: List[Card]
+) -> (Card, float):
+
     full_hand = hand + [new_card]
     probability = get_winning_probability(full_hand, len(deck), difficulty)
-    metrics = evaluate_hand(full_hand, difficulty)
-    best_suit = metrics['best_suit']
 
-    if probability < 0.3:
-        return max(full_hand, key=lambda x: x.get_value()), probability
+    if difficulty == 'easy':
+        metrics = evaluate_hand(full_hand, difficulty)
+        best_suit = metrics['best_suit']
+        if probability < 0.3:
+            return max(full_hand, key=lambda x: x.get_value()), probability
+        non_best_suit_cards = [card for card in full_hand if card.suit != best_suit]
+        if non_best_suit_cards:
+            return max(non_best_suit_cards, key=lambda x: x.get_value()), probability
+        else:
+            return max(full_hand, key=lambda x: x.get_value()), probability
 
-    non_best_suit_cards = [card for card in full_hand if card.suit != best_suit]
-    if non_best_suit_cards:
-        return max(non_best_suit_cards, key=lambda x: x.get_value()), probability
+    # HARD mod
+    target = 6
+    total_per_suit = 13
+    deck_remaining = len(deck)
+    suits_in_hand = set(card.suit for card in full_hand)
+    suit_scores = {}
 
-    return max(full_hand, key=lambda x: x.get_value()), probability
+    for suit in suits_in_hand:
+        count_in_hand = sum(1 for card in full_hand if card.suit == suit)
+        count_in_discard = sum(1 for card in discard_pile if card.suit == suit)
+        count_in_opponent = sum(1 for card in opponent_hand if card.suit == suit)
+
+        count_remaining = total_per_suit - count_in_hand - count_in_discard - count_in_opponent
+        need = target - count_in_hand
+
+        # Dinamik ağırlıklar
+        elde_weight = 0.5 + 0.3 * (count_in_hand / target) + 0.2 * (1 - len(deck) / 52)
+        elde_weight = min(1.0, max(0.0, elde_weight))  # Güvenlik sınırı
+        deste_weight = 1 - elde_weight
+
+        # Skor hesabı
+        if count_remaining <= 0 or need > deck_remaining: #4 tane kartımız var ancak destede artık yok çekemiyoruz hemen bu suits i terk et.
+            score = 0.0
+        elif count_in_hand >= 4 or need <= 0:
+            score = 1.0
+        else:
+            score = elde_weight * (count_in_hand / target) + deste_weight * (count_remaining / deck_remaining)
+
+        score = round(score, 4)
+        suit_scores[suit] = score
+
+        print(f"[DEBUG] {suit}: elde={count_in_hand}, atıldı={count_in_discard}, kalan={count_remaining}, gerekli={need}, elde_w={elde_weight:.3f}, deste_w={deste_weight:.3f}, skor={score}")
+
+    # En düşük skora sahip suit(ler)
+    min_score = min(suit_scores.values())
+    tied_weak_suits = [suit for suit, score in suit_scores.items() if score == min_score]
+
+    # Bu suitlere ait eldeki kartlar
+    discard_candidates = [card for card in full_hand if card.suit in tied_weak_suits]
+
+    if discard_candidates:
+        discard_card = max(discard_candidates, key=lambda x: x.get_value())
+        print(f"[DEBUG] En düşük skor suit(ler): {tied_weak_suits} → Atılacak kart: {discard_card}")
+        print()
+    else:
+        discard_card = max(full_hand, key=lambda x: x.get_value())
+        print(f"[DEBUG] Uyarı: discard_candidates boş! Fallback → Atılacak kart: {discard_card}")
+
+    return discard_card, probability
+
+
 
 # ---- Deste Dağıtımı ----
 def deal_cards(deck, num_cards=3):
@@ -150,7 +216,9 @@ def start_game(difficulty):
                 discard_pile.append(player_discard)
 
             temp_hand = computer_hand + [new_computer_card]
-            computer_discard, computer_prob = choose_card_to_discard(computer_hand, new_computer_card, deck, difficulty)
+            computer_discard, computer_prob = choose_card_to_discard(computer_hand, new_computer_card, deck, discard_pile, difficulty, player_hand)
+
+
             temp_hand.remove(computer_discard)
             computer_hand.clear()
             computer_hand.extend(temp_hand)
@@ -166,6 +234,33 @@ def start_game(difficulty):
                 play_turn()
 
         render_turn(last_new_player_card, last_new_computer_card, player_hand + [new_player_card], computer_hand + [new_computer_card], discard_pile, on_player_discard)
+
+    def get_card_image(card: Card, size=(80, 120)):
+        suit_map = {
+            "Kupa": "hearts",
+            "Maça": "spades",
+            "Sinek": "clubs",
+            "Karo": "diamonds"
+        }
+
+        value_map = {
+            "A": "ace",
+            "J": "jack",
+            "Q": "queen",
+            "K": "king"
+        }
+
+        suit = suit_map[card.suit]
+        value = value_map.get(card.value, card.value)
+        file_path = f"cards/{value}_of_{suit}.png"
+
+        try:
+            img = Image.open(file_path).resize(size, Image.Resampling.LANCZOS)
+
+            return ImageTk.PhotoImage(img)
+        except Exception as e:
+            print(f"[ERROR] Görsel yüklenemedi: {file_path} → {e}")
+            return None
 
     def render_turn(player_new_card, comp_new_card, hand, comp_hand, discard_pile, discard_callback):
         for widget in root.winfo_children():
@@ -185,29 +280,40 @@ def start_game(difficulty):
         row1.pack()
         for card in hand:
             if card != player_new_card:
-                btn = tk.Button(row1, text=str(card), width=18, height=2, relief="groove",
-                                font=("Courier", 10), command=lambda c=card: discard_callback(c))
-                btn.pack(side=tk.LEFT, padx=4)
+                img = get_card_image(card)
+                if img:
+                    btn = tk.Button(row1, image=img, relief="groove", command=lambda c=card: discard_callback(c))
+                    btn.image = img  # ⚠️ referansı koru
+                    btn.pack(side=tk.LEFT, padx=4)
 
         row2 = tk.Frame(frame_player)
         row2.pack(pady=5)
-        btn_new = tk.Button(row2, text=str(player_new_card), width=18, height=2, relief="groove",
-                            font=("Courier", 10), bg="#d0f0d0", command=lambda c=player_new_card: discard_callback(c))
-        btn_new.pack(side=tk.LEFT, padx=4)
+        img_new = get_card_image(player_new_card)
+        if img_new:
+            btn_new = tk.Button(row2, image=img_new, relief="groove", bg="#d0f0d0",
+                                command=lambda c=player_new_card: discard_callback(c))
+            btn_new.image = img_new
+            btn_new.pack(side=tk.LEFT, padx=4)
+
 
         tk.Label(root, text="\nBilgisayar Eli:", font=("Arial", 12, "bold"), fg="blue").pack()
         frame_computer = tk.Frame(root)
         frame_computer.pack()
         for card in comp_hand:
             if card != comp_new_card:
-                lbl = tk.Label(frame_computer, text=str(card), width=18, height=2, relief="ridge",
-                               font=("Courier", 10), bg="#f0f0f0")
-                lbl.pack(side=tk.LEFT, padx=4)
+                img = get_card_image(card)
+                if img:
+                    lbl = tk.Label(frame_computer, image=img, relief="ridge", bg="#f0f0f0")
+                    lbl.image = img  # ⚠️ Referansı korumazsan görsel görünmez
+                    lbl.pack(side=tk.LEFT, padx=4)
 
         row2_comp = tk.Frame(root)
         row2_comp.pack(pady=5)
-        tk.Label(row2_comp, text=str(comp_new_card), width=18, height=2, relief="ridge",
-                 font=("Courier", 10), bg="#a8c0ff").pack(side=tk.LEFT, padx=4)
+        img_comp = get_card_image(comp_new_card)
+        if img_comp:
+            lbl = tk.Label(row2_comp, image=img_comp, relief="ridge", bg="#a8c0ff")
+            lbl.image = img_comp
+            lbl.pack(side=tk.LEFT, padx=4)
 
         tk.Label(root, text="\nAtılan Kartlar:", font=("Arial", 11, "bold"), fg="darkgray").pack()
         frame_discard = tk.Frame(root)
@@ -228,7 +334,7 @@ def start_game(difficulty):
             show_winner(root, "Berabere!", player_hand, computer_hand, difficulty)
 
     root = tk.Tk()
-    root.title("Zeki Kart Oyunu")
+    root.title("Sezgisel Kart Oyunu")
     root.configure(bg="white")
     play_turn()
     root.mainloop()
